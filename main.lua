@@ -1,5 +1,3 @@
-
-
 local choices = {"rock", "paper", "scissors"}
 local playerMove = nil
 local opponentMove = nil
@@ -13,10 +11,11 @@ local drawing = false
 local strokes = {} -- 2D array: each stroke is a table of points
 local currentStroke = nil
 
-
 local drawingConfig = require("drawing_config")
 local MAX_STROKES = drawingConfig.max_strokes
 local MAX_POINTS = drawingConfig.max_points
+local RECOGNITION_THRESHOLD = drawingConfig.recognition_threshold or 0.05
+
 
 -- Icon images
 local iconImages = {}
@@ -82,11 +81,6 @@ local function updateLayout()
     layout._uiRectH = uiRectH
 end
 
-
-
-
-
-
 function love.load()
     font = love.graphics.newFont(24)
     love.graphics.setFont(font)
@@ -106,13 +100,9 @@ function love.resize(w, h)
     updateLayout()
 end
 
-
-
-
 function inDrawArea(x, y)
     return x >= drawArea.x and x <= drawArea.x + drawArea.w and y >= drawArea.y and y <= drawArea.y + drawArea.h
 end
-
 
 function love.mousepressed(x, y, button)
     if button == 1 then
@@ -120,7 +110,7 @@ function love.mousepressed(x, y, button)
         if x >= validateButton.x and x <= validateButton.x + validateButton.w and y >= validateButton.y and y <= validateButton.y + validateButton.h then
             if recognizedMove then
                 choose(recognizedMove)
-                recognizedMove = nil
+                resetDrawingArea()
             else
                 result = "No move recognized. Draw a shape first."
             end
@@ -160,9 +150,6 @@ function love.mousepressed(x, y, button)
     end
 end
 
-
-
-
 function love.mousemoved(x, y, dx, dy, istouch)
     if drawing and inDrawArea(x, y) and currentStroke then
         -- Count total points
@@ -175,26 +162,37 @@ function love.mousemoved(x, y, dx, dy, istouch)
         end
     end
     -- Live recognition: update recognizedMove as user draws
-    -- Flatten all points for recognition
-    local allPoints = {}
-    for _, stroke in ipairs(strokes) do
-        for _, pt in ipairs(stroke) do
-            table.insert(allPoints, pt)
-        end
-    end
-    if #allPoints > 10 then
-        local shape = ShapeRecognizer.recognizeShape(allPoints)
+    -- Pass all strokes (multi-stroke) directly to recognizer
+    if #strokes > 0 and #strokes[1] > 1 then
+        local shape, matchPercents = ShapeRecognizer.recognizeShape(strokes)
         if shape == "rock" or shape == "paper" or shape == "scissors" then
             recognizedMove = shape
         else
-            recognizedMove = nil
+            -- Pick the most likely move if available
+            if matchPercents then
+                local best, bestScore = nil, -1
+                for move, score in pairs(matchPercents) do
+                    if score > bestScore then
+                        best = move
+                        bestScore = score
+                    end
+                end
+                if bestScore > RECOGNITION_THRESHOLD then -- Only show if above threshold from config
+                    recognizedMove = best
+                else
+                    recognizedMove = nil
+                end
+            else
+                recognizedMove = nil
+            end
         end
+        -- Store matchPercents for debug display
+        _G._matchPercents = matchPercents
     else
         recognizedMove = nil
+        _G._matchPercents = nil
     end
 end
-
-
 
 function love.mousereleased(x, y, button)
     if button == 1 and drawing then
@@ -209,6 +207,12 @@ function choose(move)
     result = getResult(playerMove, opponentMove)
 end
 
+function resetDrawingArea()
+    strokes = {}
+    currentStroke = nil
+    recognizedMove = nil
+end
+
 function getResult(p1, p2)
     if p1 == p2 then
         return "Draw!"
@@ -221,10 +225,19 @@ function getResult(p1, p2)
     end
 end
 
+-- Debug mode global variable
+-- 0 = off, 1 = on
+_G.debug = 0
 
-
-
-
+function love.keypressed(key)
+    if key == "p" then
+        if _G.debug == 0 then
+            _G.debug = 1
+        else
+            _G.debug = 0
+        end
+    end
+end
 
 function love.draw()
     -- Draw BoardContainer (blue rectangle to the left of the red UI block)
@@ -236,18 +249,22 @@ function love.draw()
     local boardH = (layout.boardContainer and layout.boardContainer.height) or (love.graphics.getHeight() * (2/3) - boardMarginTop - boardMarginBottom)
     local boardX = boardMarginLeft
     local boardY = layout._uiRectY + layout._uiRectH - boardH - boardMarginBottom
-    love.graphics.setColor(0.2, 0.4, 1, 0.3)
-    love.graphics.rectangle("fill", boardX, boardY, boardW, boardH)
-    love.graphics.setColor(0.2, 0.4, 1, 1)
-    love.graphics.rectangle("line", boardX, boardY, boardW, boardH)
-    love.graphics.setColor(1, 1, 1, 1)
+    if _G.debug == 1 then
+        love.graphics.setColor(0.2, 0.4, 1, 0.3)
+        love.graphics.rectangle("fill", boardX, boardY, boardW, boardH)
+        love.graphics.setColor(0.2, 0.4, 1, 1)
+        love.graphics.rectangle("line", boardX, boardY, boardW, boardH)
+        love.graphics.setColor(1, 1, 1, 1)
+    end
 
     -- Draw UI rectangle (debug: red border)
-    love.graphics.setColor(1, 0, 0, 0.3)
-    love.graphics.rectangle("fill", layout._uiRectX, layout._uiRectY, layout._uiRectW, layout._uiRectH)
-    love.graphics.setColor(1, 0, 0, 1)
-    love.graphics.rectangle("line", layout._uiRectX, layout._uiRectY, layout._uiRectW, layout._uiRectH)
-    love.graphics.setColor(1, 1, 1, 1)
+    if _G.debug == 1 then
+        love.graphics.setColor(1, 0, 0, 0.3)
+        love.graphics.rectangle("fill", layout._uiRectX, layout._uiRectY, layout._uiRectW, layout._uiRectH)
+        love.graphics.setColor(1, 0, 0, 1)
+        love.graphics.rectangle("line", layout._uiRectX, layout._uiRectY, layout._uiRectW, layout._uiRectH)
+        love.graphics.setColor(1, 1, 1, 1)
+    end
 
     -- Draw drawing area
     love.graphics.setColor(0.9, 0.9, 1, 0.2)
@@ -293,14 +310,32 @@ function love.draw()
     love.graphics.printf("Reset", resetButton.x, resetButton.y + 18, resetButton.w, "center")
 
     -- Display stroke/point debug info (top left corner)
-    local numStrokes = #strokes
-    local numPoints = 0
-    for _, stroke in ipairs(strokes) do
-        numPoints = numPoints + #stroke
+    if _G.debug == 1 then
+        local numStrokes = #strokes
+        local numPoints = 0
+        for _, stroke in ipairs(strokes) do
+            numPoints = numPoints + #stroke
+        end
+        love.graphics.setColor(1, 1, 0, 1)
+        love.graphics.print("Strokes: " .. numStrokes .. "  Points: " .. numPoints, 10, 10)
+        love.graphics.setColor(1, 1, 1, 1)
+
+        -- Debug: show icon and match % for each move
+        local y = 40
+        local x = 10
+        local iconSize = 32
+        local moves = {"rock", "paper", "scissors"}
+        for _, move in ipairs(moves) do
+            local percent = _G._matchPercents and _G._matchPercents[move] or 0
+            if iconImages[move] then
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(iconImages[move], x, y, 0, iconSize / iconImages[move]:getWidth(), iconSize / iconImages[move]:getHeight())
+            end
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.print(string.format("%s: %d%%", move, math.floor(percent * 100 + 0.5)), x + iconSize + 8, y + 8)
+            y = y + iconSize + 8
+        end
     end
-    love.graphics.setColor(1, 1, 0, 1)
-    love.graphics.print("Strokes: " .. numStrokes .. "  Points: " .. numPoints, 10, 10)
-    love.graphics.setColor(1, 1, 1, 1)
 
     -- Display result
     if playerMove then
