@@ -4,16 +4,12 @@ local opponentMove = nil
 local result = ""
 local ShapeRecognizer = require("shape_recognizer")
 local layout = require("layout_config")
+local DrawingTool = require("drawing_tool")
 
 -- Drawing state
-
-local drawing = false
-local strokes = {} -- 2D array: each stroke is a table of points
-local currentStroke = nil
+local drawingTool = nil
 
 local drawingConfig = require("drawing_config")
-local MAX_STROKES = drawingConfig.max_strokes
-local MAX_POINTS = drawingConfig.max_points
 local RECOGNITION_THRESHOLD = drawingConfig.recognition_threshold or 0.05
 
 
@@ -94,14 +90,24 @@ function love.load()
     iconImages.paper = love.graphics.newImage("assets/icons/icon_paper.png")
     iconImages.scissors = love.graphics.newImage("assets/icons/icon_scissor.png")
     updateLayout()
+    
+    -- Create drawing tool
+    drawingTool = DrawingTool.new(0, 0, 400, 400, {
+        max_strokes = drawingConfig.max_strokes,
+        max_points = drawingConfig.max_points,
+        line_width = 2,
+        stroke_color = {1, 1, 1, 1},
+        background_color = {0.9, 0.9, 1, 0.2},
+        border_color = {0.2, 0.2, 0.5, 1}
+    })
 end
 
 function love.resize(w, h)
     updateLayout()
-end
-
-function inDrawArea(x, y)
-    return x >= drawArea.x and x <= drawArea.x + drawArea.w and y >= drawArea.y and y <= drawArea.y + drawArea.h
+    -- Update drawing tool bounds
+    if drawingTool then
+        drawingTool:setBounds(drawArea.x, drawArea.y, drawArea.w, drawArea.h)
+    end
 end
 
 function love.mousepressed(x, y, button)
@@ -118,51 +124,24 @@ function love.mousepressed(x, y, button)
         end
         -- Check if reset button is pressed
         if x >= resetButton.x and x <= resetButton.x + resetButton.w and y >= resetButton.y and y <= resetButton.y + resetButton.h then
-            strokes = {}
-            currentStroke = nil
-            result = ""
-            playerMove = nil
-            opponentMove = nil
-            recognizedMove = nil
+            resetDrawingArea()
             return
         end
-        -- Count total points
-        local numPoints = 0
-        for _, stroke in ipairs(strokes) do
-            numPoints = numPoints + #stroke
-        end
-        -- Start drawing only if inside draw area and limits not reached
-        if inDrawArea(x, y) and #strokes < MAX_STROKES and numPoints < MAX_POINTS then
-            if not drawing then
-                drawing = true
-                currentStroke = {}
-                table.insert(strokes, currentStroke)
-            end
-            if numPoints < MAX_POINTS then
-                table.insert(currentStroke, {x = x, y = y})
-            end
-        else
-            if drawing then
-                drawing = false
-                currentStroke = nil
-            end
+        -- Handle drawing
+        if drawingTool then
+            drawingTool:mousepressed(x, y, button)
         end
     end
 end
 
 function love.mousemoved(x, y, dx, dy, istouch)
-    if drawing and inDrawArea(x, y) and currentStroke then
-        -- Count total points
-        local numPoints = 0
-        for _, stroke in ipairs(strokes) do
-            numPoints = numPoints + #stroke
-        end
-        if numPoints < MAX_POINTS then
-            table.insert(currentStroke, {x = x, y = y})
-        end
+    if drawingTool then
+        drawingTool:mousemoved(x, y, dx, dy, istouch)
     end
+    
     -- Live recognition: update recognizedMove as user draws
     -- Pass all strokes (multi-stroke) directly to recognizer
+    local strokes = drawingTool and drawingTool:getStrokes() or {}
     if #strokes > 0 and #strokes[1] > 1 then
         local shape, matchPercents = ShapeRecognizer.recognizeShape(strokes)
         if shape == "rock" or shape == "paper" or shape == "scissors" then
@@ -195,9 +174,8 @@ function love.mousemoved(x, y, dx, dy, istouch)
 end
 
 function love.mousereleased(x, y, button)
-    if button == 1 and drawing then
-        drawing = false
-        currentStroke = nil
+    if drawingTool then
+        drawingTool:mousereleased(x, y, button)
     end
 end
 
@@ -208,8 +186,12 @@ function choose(move)
 end
 
 function resetDrawingArea()
-    strokes = {}
-    currentStroke = nil
+    if drawingTool then
+        drawingTool:clear()
+    end
+    result = ""
+    playerMove = nil
+    opponentMove = nil
     recognizedMove = nil
 end
 
@@ -266,21 +248,15 @@ function love.draw()
         love.graphics.setColor(1, 1, 1, 1)
     end
 
-    -- Draw drawing area
-    love.graphics.setColor(0.9, 0.9, 1, 0.2)
-    love.graphics.rectangle("fill", drawArea.x, drawArea.y, drawArea.w, drawArea.h)
-    love.graphics.setColor(0.2, 0.2, 0.5, 1)
-    love.graphics.rectangle("line", drawArea.x, drawArea.y, drawArea.w, drawArea.h)
-    love.graphics.setColor(1, 1, 1, 1)
-
-    -- Draw the user's drawing (multi-stroke)
-    for _, stroke in ipairs(strokes) do
-        if #stroke > 1 then
-            for i = 2, #stroke do
-                local p1 = stroke[i-1]
-                local p2 = stroke[i]
-                love.graphics.line(p1.x, p1.y, p2.x, p2.y)
-            end
+    -- Draw drawing area and user's drawing
+    if drawingTool then
+        -- Update drawing tool bounds in case layout changed
+        drawingTool:setBounds(drawArea.x, drawArea.y, drawArea.w, drawArea.h)
+        
+        if _G.debug == 1 then
+            drawingTool:drawDebug()
+        else
+            drawingTool:draw()
         end
     end
 
@@ -311,11 +287,9 @@ function love.draw()
 
     -- Display stroke/point debug info (top left corner)
     if _G.debug == 1 then
+        local strokes = drawingTool and drawingTool:getStrokes() or {}
         local numStrokes = #strokes
-        local numPoints = 0
-        for _, stroke in ipairs(strokes) do
-            numPoints = numPoints + #stroke
-        end
+        local numPoints = drawingTool and drawingTool:getTotalPoints() or 0
         love.graphics.setColor(1, 1, 0, 1)
         love.graphics.print("Strokes: " .. numStrokes .. "  Points: " .. numPoints, 10, 10)
         love.graphics.setColor(1, 1, 1, 1)

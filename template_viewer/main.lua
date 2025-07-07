@@ -1,5 +1,7 @@
 package.path = package.path .. ";../?.lua"
 local layout = require("layout")
+local shape_recognizer = require("shape_recognizer")
+local DrawingTool = require("drawing_tool")
 local templates = layout.shape_templates
 
 local templateNames = {}
@@ -7,142 +9,72 @@ for name in pairs(templates) do table.insert(templateNames, name) end
 table.sort(templateNames)
 
 local current = 1
-local drawing = false
-local userStroke = {}
-local userStrokes = {}
+local drawingTool = nil
 local matchPercents = {}
+
+function love.load()
+    -- Create drawing tool
+    local boxX, boxY, boxW, boxH = 100, 100, 400, 400
+    drawingTool = DrawingTool.new(boxX, boxY, boxW, boxH, {
+        max_strokes = 10,
+        max_points = 1000,
+        line_width = 2,
+        stroke_color = {0.2, 1, 0.2, 1}, -- green for user strokes
+        background_color = {0, 0, 0, 0}, -- transparent background so template shows through
+        border_color = {1, 1, 1, 1} -- white border
+    })
+end
 
 function love.keypressed(key)
     if key == "right" or key == "d" then
         current = current % #templateNames + 1
-        userStroke = {}
-        userStrokes = {}
+        if drawingTool then
+            drawingTool:clear()
+        end
     elseif key == "left" or key == "a" then
         current = (current - 2) % #templateNames + 1
-        userStroke = {}
-        userStrokes = {}
+        if drawingTool then
+            drawingTool:clear()
+        end
     elseif key == "return" or key == "space" then
-        if #userStroke > 0 then
-            table.insert(userStrokes, userStroke)
-            userStroke = {}
+        -- For multi-stroke drawing, this could commit current stroke
+        -- For now, we'll just clear to start fresh
+        if drawingTool then
+            drawingTool:clear()
         end
     elseif key == "backspace" then
-        userStroke = {}
-        userStrokes = {}
+        if drawingTool then
+            drawingTool:clear()
+        end
     end
 end
 
 function love.mousepressed(x, y, button)
-    if button == 1 then
-        local boxX, boxY, boxW, boxH = 100, 100, 400, 400
-        if x >= boxX and x <= boxX + boxW and y >= boxY and y <= boxY + boxH then
-            drawing = true
-            userStroke = {}
-        end
+    if drawingTool then
+        drawingTool:mousepressed(x, y, button)
     end
 end
 
 function love.mousemoved(x, y, dx, dy, istouch)
-    if drawing then
-        local boxX, boxY, boxW, boxH = 100, 100, 400, 400
-        if x >= boxX and x <= boxX + boxW and y >= boxY and y <= boxY + boxH then
-            local nx = (x - boxX) / boxW
-            local ny = (y - boxY) / boxH
-            table.insert(userStroke, {x = nx, y = ny})
-        end
+    if drawingTool then
+        drawingTool:mousemoved(x, y, dx, dy, istouch)
     end
 end
 
 function love.mousereleased(x, y, button)
-    if button == 1 and drawing then
-        drawing = false
-        if #userStroke > 0 then
-            table.insert(userStrokes, userStroke)
-            userStroke = {}
-        end
+    if drawingTool then
+        drawingTool:mousereleased(x, y, button)
     end
-end
-
--- Simple template matching for debug (copy of recognizer logic)
-local function dist(a, b)
-    return math.sqrt((a.x - b.x)^2 + (a.y - b.y)^2)
-end
-local function resamplePath(path, n)
-    if #path < 2 then return path end
-    local totalLength = 0
-    for i = 2, #path do totalLength = totalLength + dist(path[i-1], path[i]) end
-    local interval = totalLength / (n-1)
-    local D = 0
-    local newPath = {path[1]}
-    local prev = path[1]
-    local i = 2
-    while i <= #path do
-        local d = dist(prev, path[i])
-        if (D + d) >= interval then
-            local t = (interval - D) / d
-            local nx = prev.x + t * (path[i].x - prev.x)
-            local ny = prev.y + t * (path[i].y - prev.y)
-            local newpt = {x = nx, y = ny}
-            table.insert(newPath, newpt)
-            prev = newpt
-            D = 0
-        else
-            D = D + d
-            prev = path[i]
-            i = i + 1
-        end
-    end
-    while #newPath < n do
-        table.insert(newPath, {x = path[#path].x, y = path[#path].y})
-    end
-    return newPath
-end
-local function normalizePath(path)
-    local minX, maxX = path[1].x, path[1].x
-    local minY, maxY = path[1].y, path[1].y
-    for _, p in ipairs(path) do
-        minX = math.min(minX, p.x)
-        maxX = math.max(maxX, p.x)
-        minY = math.min(minY, p.y)
-        maxY = math.max(maxY, p.y)
-    end
-    local width = maxX - minX
-    local height = maxY - minY
-    local scale = math.max(width, height)
-    local norm = {}
-    for _, p in ipairs(path) do
-        table.insert(norm, {x = (p.x - minX) / scale, y = (p.y - minY) / scale})
-    end
-    return norm
-end
-local function pathDistance(p1, p2)
-    local sum = 0
-    for i = 1, #p1 do sum = sum + dist(p1[i], p2[i]) end
-    return sum / #p1
-end
-local function strokesDistance(userStrokes, tmplStrokes, N)
-    if #userStrokes ~= #tmplStrokes then return math.huge end
-    local total = 0
-    for i = 1, #userStrokes do
-        local upath = normalizePath(resamplePath(userStrokes[i], N))
-        local tpath = normalizePath(resamplePath(tmplStrokes[i], N))
-        total = total + pathDistance(upath, tpath)
-    end
-    return total / #userStrokes
-end
-local function getMatchPercents(userStrokes)
-    local N = 16
-    local percents = {}
-    for _, name in ipairs(templateNames) do
-        local tmpl = templates[name]
-        local d = strokesDistance(userStrokes, tmpl, N)
-        percents[name] = (d == math.huge) and 0 or math.max(0, 1 - d)
-    end
-    return percents
 end
 
 function love.update(dt)
-    matchPercents = getMatchPercents(userStrokes)
+    local userStrokes = drawingTool and drawingTool:getNormalizedStrokes() or {}
+    if #userStrokes > 0 then
+        local _, percentages = shape_recognizer.recognizeShape(userStrokes)
+        matchPercents = percentages or {}
+    else
+        matchPercents = {}
+    end
 end
 
 function love.draw()
@@ -182,41 +114,144 @@ function love.draw()
         end
     end
 
-    -- Draw user strokes
-    for si, stroke in ipairs(userStrokes) do
-        love.graphics.setColor(0.2, 1, 0.2, 1)
+    -- Draw user's drawing using the drawing tool (without background, just strokes)
+    if drawingTool then
+        -- Draw only the strokes, not the background/border (template already provides that)
+        love.graphics.setColor(drawingTool.config.stroke_color)
+        love.graphics.setLineWidth(drawingTool.config.line_width)
+        
+        local userStrokes = drawingTool:getStrokes()
+        for _, stroke in ipairs(userStrokes) do
+            if #stroke > 1 then
+                for i = 2, #stroke do
+                    local p1 = stroke[i-1]
+                    local p2 = stroke[i]
+                    love.graphics.line(p1.x, p1.y, p2.x, p2.y)
+                end
+            end
+        end
+        
+        -- Draw current stroke (if drawing)
+        if drawingTool.currentStroke and #drawingTool.currentStroke > 1 then
+            love.graphics.setColor(1, 1, 0.2, 1) -- yellow for current stroke
+            for i = 2, #drawingTool.currentStroke do
+                local p1 = drawingTool.currentStroke[i-1]
+                local p2 = drawingTool.currentStroke[i]
+                love.graphics.line(p1.x, p1.y, p2.x, p2.y)
+            end
+        end
+        
+        -- Draw the individual points (like the original template viewer)
+        drawingTool:drawPoints(4, {0.2, 1, 0.2, 1}, {1, 1, 0.2, 1}) -- green for completed strokes, yellow for current
+        
+        -- Draw resampled points (what the recognizer uses before normalization)
+        local userStrokes = drawingTool:getStrokes()
+        if #userStrokes > 0 then
+            -- Get resampled strokes (before normalization)
+            local resampledStrokes = shape_recognizer.getResampledStrokes(userStrokes)
+            love.graphics.setColor(1, 0.2, 1, 1) -- magenta for resampled points
+            for _, stroke in ipairs(resampledStrokes) do
+                for _, point in ipairs(stroke) do
+                    love.graphics.circle("fill", point.x, point.y, 6) -- slightly larger circles
+                end
+            end
+        end
+        
+        -- Reset graphics state
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setLineWidth(1)
+    end
+
+    -- Draw small normalized preview window (positioned above accuracy rating)
+    local previewX = boxX + boxW + 30
+    local previewY = boxY + boxH/2 - 150  -- moved further up
+    local previewW = 100
+    local previewH = 100
+    
+    love.graphics.setColor(0.1, 0.1, 0.1, 1)
+    love.graphics.rectangle("fill", previewX, previewY, previewW, previewH)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.rectangle("line", previewX, previewY, previewW, previewH)
+    
+    -- Label for normalized preview
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("Normalized View", previewX, previewY - 15)
+    
+    -- Draw template in normalized view
+    local name = templateNames[current]
+    local templateStrokes = templates[name]
+    for _, stroke in ipairs(templateStrokes) do
+        love.graphics.setColor(0.6, 0.8, 1, 0.7) -- template lines in preview
         if #stroke > 1 then
             for i = 2, #stroke do
                 local p1 = stroke[i-1]
                 local p2 = stroke[i]
                 love.graphics.line(
-                    boxX + p1.x * boxW, boxY + p1.y * boxH,
-                    boxX + p2.x * boxW, boxY + p2.y * boxH
+                    previewX + p1.x * previewW, previewY + p1.y * previewH,
+                    previewX + p2.x * previewW, previewY + p2.y * previewH
                 )
             end
         end
+        -- Template points
         for _, p in ipairs(stroke) do
-            love.graphics.setColor(0.2, 1, 0.2)
-            love.graphics.circle("fill", boxX + p.x * boxW, boxY + p.y * boxH, 4)
+            love.graphics.setColor(1, 0.5, 0.5, 0.7)
+            love.graphics.circle("fill", previewX + p.x * previewW, previewY + p.y * previewH, 2)
         end
     end
-    -- Draw current stroke (not yet committed)
-    love.graphics.setColor(1, 1, 0.2, 1)
-    if #userStroke > 1 then
-        for i = 2, #userStroke do
-            local p1 = userStroke[i-1]
-            local p2 = userStroke[i]
-            love.graphics.line(
-                boxX + p1.x * boxW, boxY + p1.y * boxH,
-                boxX + p2.x * boxW, boxY + p2.y * boxH
-            )
+    
+    -- Draw user's normalized points in preview
+    local userStrokes = drawingTool and drawingTool:getStrokes() or {}
+    if #userStrokes > 0 then
+        local processedStrokes = shape_recognizer.getProcessedStrokes(userStrokes)
+        love.graphics.setColor(0.2, 1, 1, 1) -- cyan for normalized points
+        for _, stroke in ipairs(processedStrokes) do
+            -- Draw lines between normalized points
+            if #stroke > 1 then
+                for i = 2, #stroke do
+                    local p1 = stroke[i-1]
+                    local p2 = stroke[i]
+                    love.graphics.line(
+                        previewX + p1.x * previewW, previewY + p1.y * previewH,
+                        previewX + p2.x * previewW, previewY + p2.y * previewH
+                    )
+                end
+            end
+            -- Draw normalized points
+            for _, point in ipairs(stroke) do
+                love.graphics.circle("fill", previewX + point.x * previewW, previewY + point.y * previewH, 2)
+            end
         end
-    end
-    for _, p in ipairs(userStroke) do
-        love.graphics.circle("fill", boxX + p.x * boxW, boxY + p.y * boxH, 4)
     end
 
-    -- Draw match percent for current template
+    -- Draw match percent for current template (positioned below the normalized preview)
     love.graphics.setColor(1, 1, 1)
-    love.graphics.printf(string.format("Accuracy: %d%%", math.floor((matchPercents[name] or 0) * 100 + 0.5)), boxX + boxW + 30, boxY + boxH/2 - 16, 200, "left")
+    love.graphics.printf(string.format("Accuracy: %d%%", math.floor((matchPercents[name] or 0) * 100 + 0.5)), boxX + boxW + 30, previewY + previewH + 20, 200, "left")
+    
+    -- Draw legend (positioned below the accuracy rating)
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("Legend:", boxX + boxW + 30, previewY + previewH + 50)
+    
+    -- Template points (red)
+    love.graphics.setColor(1, 0.5, 0.5)
+    love.graphics.circle("fill", boxX + boxW + 40, previewY + previewH + 70, 5)
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("Template", boxX + boxW + 55, previewY + previewH + 65)
+    
+    -- User drawing points (green)
+    love.graphics.setColor(0.2, 1, 0.2)
+    love.graphics.circle("fill", boxX + boxW + 40, previewY + previewH + 90, 4)
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("Your drawing", boxX + boxW + 55, previewY + previewH + 85)
+    
+    -- Resampled points (magenta)
+    love.graphics.setColor(1, 0.2, 1)
+    love.graphics.circle("fill", boxX + boxW + 40, previewY + previewH + 110, 6)
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("Resampled (16pt)", boxX + boxW + 55, previewY + previewH + 105)
+    
+    -- Normalized points (cyan)
+    love.graphics.setColor(0.2, 1, 1)
+    love.graphics.circle("fill", boxX + boxW + 40, previewY + previewH + 130, 3)
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("Normalized (used for matching)", boxX + boxW + 55, previewY + previewH + 125)
 end
