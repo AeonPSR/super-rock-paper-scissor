@@ -233,157 +233,60 @@ local function strokesDistance(userStrokes, tmplStrokes, N)
     for _, stroke in ipairs(tmplStrokes) do
         if #stroke == 0 then return math.huge end
     end
-    
-    -- Resample all strokes first
+
+    -- Resample and normalize all strokes
     local resampledUserStrokes = {}
     local resampledTmplStrokes = {}
-    
     for _, stroke in ipairs(userStrokes) do
         table.insert(resampledUserStrokes, resamplePath(stroke, N))
     end
     for _, stroke in ipairs(tmplStrokes) do
         table.insert(resampledTmplStrokes, resamplePath(stroke, N))
     end
-    
-    -- Normalize user strokes together
-    local normalizedUserStrokes = normalizeMultipleStrokes(resampledUserStrokes)
-    -- Normalize template strokes together (templates are already in normalized space, but we need to ensure consistency)
-    local normalizedTmplStrokes = normalizeMultipleStrokes(resampledTmplStrokes)
-    
-    -- If stroke counts match exactly, use original algorithm with invariant matching
-    if #normalizedUserStrokes == #normalizedTmplStrokes then
-        local total = 0
-        for i = 1, #normalizedUserStrokes do
-            total = total + pathDistanceInvariant(normalizedUserStrokes[i], normalizedTmplStrokes[i])
+    local normUser = normalizeMultipleStrokes(resampledUserStrokes)
+    local normTmpl = normalizeMultipleStrokes(resampledTmplStrokes)
+
+    -- Assignment-agnostic matching: find best assignment of user strokes to template strokes
+    local nUser = #normUser
+    local nTmpl = #normTmpl
+    local usedTmpl = {}
+    local totalDist = 0
+    local count = 0
+
+    -- Greedy assignment: for each user stroke, find the closest template stroke (no double assignment)
+    for i = 1, nUser do
+        local bestIdx, bestDist = nil, math.huge
+        for j = 1, nTmpl do
+            if not usedTmpl[j] then
+                local d = pathDistanceInvariant(normUser[i], normTmpl[j])
+                if d < bestDist then
+                    bestDist = d
+                    bestIdx = j
+                end
+            end
         end
-        return total / #normalizedUserStrokes
+        if bestIdx then
+            usedTmpl[bestIdx] = true
+            totalDist = totalDist + bestDist
+            count = count + 1
+        end
     end
-    
-    -- If user has more strokes than template, try to merge user strokes
-    if #normalizedUserStrokes > #normalizedTmplStrokes then
-        -- Strategy 1: Merge all user strokes into one and compare to template
-        local mergedUserStroke = {}
-        for _, stroke in ipairs(normalizedUserStrokes) do
-            for _, point in ipairs(stroke) do
-                table.insert(mergedUserStroke, point)
-            end
-        end
-        
-        -- Safety check: ensure merged stroke has points
-        if #mergedUserStroke == 0 then return math.huge end
-        
-        -- Try matching against each template stroke and take the best match
-        local bestDist = math.huge
-        for i = 1, #normalizedTmplStrokes do
-            local dist = pathDistanceInvariant(mergedUserStroke, normalizedTmplStrokes[i])
-            bestDist = math.min(bestDist, dist)
-        end
-        
-        -- If template has multiple strokes, try merging template strokes too
-        if #normalizedTmplStrokes > 1 then
-            local mergedTemplateStroke = {}
-            for _, stroke in ipairs(normalizedTmplStrokes) do
-                for _, point in ipairs(stroke) do
-                    table.insert(mergedTemplateStroke, point)
-                end
-            end
-            
-            local mergedDist = pathDistanceInvariant(mergedUserStroke, mergedTemplateStroke)
-            bestDist = math.min(bestDist, mergedDist)
-        end
-        
-        -- Strategy 2: Try connecting strokes in different orders to form a closed shape
-        -- This is especially important for shapes like squares drawn as separate lines
-        if #normalizedUserStrokes >= 3 then
-            -- Try to find the best way to connect the strokes
-            local function tryConnectStrokes(strokes)
-                local connected = {}
-                -- Start with the first stroke
-                for _, point in ipairs(strokes[1]) do
-                    table.insert(connected, point)
-                end
-                
-                -- Try to connect remaining strokes by finding closest endpoints
-                local remaining = {}
-                for i = 2, #strokes do
-                    table.insert(remaining, strokes[i])
-                end
-                
-                while #remaining > 0 do
-                    local lastPoint = connected[#connected]
-                    local bestIdx = 1
-                    local bestDist = math.huge
-                    local bestReverse = false
-                    
-                    -- Find the closest stroke to connect
-                    for i, stroke in ipairs(remaining) do
-                        if #stroke > 0 then
-                            -- Try connecting to start of stroke
-                            local distToStart = dist(lastPoint, stroke[1])
-                            if distToStart < bestDist then
-                                bestDist = distToStart
-                                bestIdx = i
-                                bestReverse = false
-                            end
-                            
-                            -- Try connecting to end of stroke (reversed)
-                            local distToEnd = dist(lastPoint, stroke[#stroke])
-                            if distToEnd < bestDist then
-                                bestDist = distToEnd
-                                bestIdx = i
-                                bestReverse = true
-                            end
-                        end
-                    end
-                    
-                    -- Connect the best stroke
-                    local strokeToConnect = table.remove(remaining, bestIdx)
-                    if bestReverse then
-                        -- Add stroke in reverse order
-                        for i = #strokeToConnect, 1, -1 do
-                            table.insert(connected, strokeToConnect[i])
-                        end
-                    else
-                        -- Add stroke in normal order
-                        for _, point in ipairs(strokeToConnect) do
-                            table.insert(connected, point)
-                        end
-                    end
-                end
-                
-                return connected
-            end
-            
-            local connectedStroke = tryConnectStrokes(normalizedUserStrokes)
-            if #connectedStroke > 0 then
-                for i = 1, #normalizedTmplStrokes do
-                    local dist = pathDistanceInvariant(connectedStroke, normalizedTmplStrokes[i])
-                    bestDist = math.min(bestDist, dist)
-                end
-            end
-        end
-        
-        return bestDist
+
+    -- Penalize for unmatched template strokes (if user drew fewer than template)
+    local penalty = 1.0 -- can be tuned
+    local unmatched = nTmpl - count
+    totalDist = totalDist + unmatched * penalty
+    count = count + unmatched
+
+    -- Penalize for extra user strokes (if user drew more than template)
+    local extra = nUser - nTmpl
+    if extra > 0 then
+        totalDist = totalDist + extra * penalty
+        count = count + extra
     end
-    
-    -- If user has fewer strokes than template, try to match best subset
-    if #normalizedUserStrokes < #normalizedTmplStrokes then
-        -- Try matching user strokes to the best fitting template strokes
-        local bestDist = math.huge
-        
-        -- Try different combinations of template strokes
-        for i = 1, #normalizedTmplStrokes - #normalizedUserStrokes + 1 do
-            local total = 0
-            for j = 1, #normalizedUserStrokes do
-                total = total + pathDistanceInvariant(normalizedUserStrokes[j], normalizedTmplStrokes[i + j - 1])
-            end
-            bestDist = math.min(bestDist, total / #normalizedUserStrokes)
-        end
-        
-        return bestDist
-    end
-    
-    return math.huge
+
+    if count == 0 then return math.huge end
+    return totalDist / count
 end
 
 -- Main recognition function (multi-stroke template matching)

@@ -88,7 +88,7 @@ function love.load()
     -- Load icons
     iconImages.rock = love.graphics.newImage("assets/icons/icon_rock.png")
     iconImages.paper = love.graphics.newImage("assets/icons/icon_paper.png")
-    iconImages.scissors = love.graphics.newImage("assets/icons/icon_scissor.png")
+    iconImages.scissors = love.graphics.newImage("assets/icons/icon_scissors.png")
     updateLayout()
     
     -- Create drawing tool
